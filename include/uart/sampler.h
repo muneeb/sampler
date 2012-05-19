@@ -43,6 +43,9 @@ typedef struct {
 
     void *_internal;
 
+    /*sampler internal state for stride detection*/
+    void *_s_internal;
+
     /* High level API */
     unsigned long   burst_begin;
     unsigned long   burst_end;
@@ -68,6 +71,9 @@ extern int sampler_fini(sampler_t *s);
 /* Low level API */
 extern int sampler_watchpoint_lookup(sampler_t *s, usf_access_t *ref);
 extern int sampler_watchpoint_insert(sampler_t *s, usf_access_t *ref);
+
+extern int sampler_pc_watchpoint_lookup(sampler_t *s, usf_access_t *ref);
+extern int sampler_pc_watchpoint_insert(sampler_t *s, usf_access_t *ref);
 
 extern int sampler_burst_begin(sampler_t *s, unsigned long time);
 extern int sampler_burst_end(sampler_t *s, unsigned long time);

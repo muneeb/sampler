@@ -69,15 +69,16 @@ usf_atime_t access_counter = 0;
 
 
 static VOID
-trace_mem(ADDRINT ip, ADDRINT addr, UINT32 size, THREADID tid, UINT32 ref_type)
+trace_mem(ADDRINT ip, ADDRINT addr, UINT32 size, THREADID tid, UINT32 ref_type, UINT32 opno)
 {
     usf_access_t access = {
-	(usf_addr_t)ip,
+        (usf_addr_t)ip,
 	(usf_addr_t)addr,
 	access_counter,
 	tid,
 	size,
-	(usf_atype_t)ref_type
+	(usf_atype_t)ref_type,
+	(usf_operand_t)opno
     };
 
     sampler_ref(&sampler, &access);
@@ -114,6 +115,7 @@ instrument(INS ins, VOID *v)
 		       IARG_UINT32, size,
 		       IARG_THREAD_ID,
 		       IARG_UINT32, atype,
+		       IARG_UINT32, op,
 		       IARG_END); 
 
 	INS_InsertPredicatedCall(ins, IPOINT_BEFORE, (AFUNPTR)trace_update_access_counter,

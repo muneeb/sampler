@@ -160,6 +160,24 @@ burst_log_smpl(burst_t *burst, usf_access_t *ref1, usf_access_t *ref2,
 }
 
 static int
+burst_log_stride_smpl(burst_t *burst, usf_access_t *ref1, usf_access_t *ref2,
+	       usf_line_size_2_t line_size_lg2)
+{
+    usf_event_t event;
+    usf_error_t error;
+
+    event.type = USF_EVENT_STRIDE; 
+    event.u.sample.begin = *ref1;
+    event.u.sample.end = *ref2;
+    event.u.sample.line_size = line_size_lg2;
+
+    error = usf_append(burst->usf_file, &event);
+    E_USF(error, -1);
+    LOG(2, "burst: %s\n", burst->name);
+    return 0;
+}
+
+static int
 burst_log_dngl(burst_t *burst, usf_access_t *ref,
 	       usf_line_size_2_t line_size_lg2)
 {
@@ -188,7 +206,11 @@ watchpoint_hash_comp(hash_elem_t *e1, hash_elem_t *e2)
 {
     watchpoint_t *w1 = HASH_STRUCT(watchpoint_t, elem, e1);
     watchpoint_t *w2 = HASH_STRUCT(watchpoint_t, elem, e2);
-    return w1->line == w2->line;
+
+    usf_access_t w1_ref = w1->ref;
+    usf_access_t w2_ref = w2->ref;
+
+    return (( w1->line == w2->line) && (w1_ref.operand == w2_ref.operand ));
 }
 
 static int
@@ -202,16 +224,15 @@ watchpoint_insert(hash_t *hash, burst_t *burst, unsigned line, usf_access_t *ref
     w->line  =  line;
     w->burst =  burst;
     w->ref   = *ref;
-
     hash_insert(hash, &w->elem);
     return 0;
 }
 
 static watchpoint_t *
-watchpoint_lookup(hash_t *hash, unsigned line)
+watchpoint_lookup(hash_t *hash, unsigned line, usf_access_t *ref)
 {
     hash_elem_t  *e;
-    watchpoint_t  w_cmp = { .line = line };
+    watchpoint_t  w_cmp = { .line = line, .ref = *ref };
 
     e = hash_lookup(hash, &w_cmp.elem);
     if (!e)
@@ -220,26 +241,35 @@ watchpoint_lookup(hash_t *hash, unsigned line)
     return HASH_STRUCT(watchpoint_t, elem, e);
 }
 
-
-
 int
 sampler_init(sampler_t *s)
 {
     int err;
-    sampler_internal_t *internal;
+    sampler_internal_t *internal, *s_internal;
 
     bzero(s, sizeof(sampler_t));
 
     internal = malloc(sizeof(sampler_internal_t));
+    s_internal = malloc(sizeof(sampler_internal_t));
+
     E_IF(!internal, -1);
     s->_internal = internal;
+
+    E_IF(!s_internal, -1);
+    s->_s_internal = s_internal;
 
     s->usf_flags = USF_FLAG_NATIVE_ENDIAN | USF_FLAG_BURST;
 
     err = hash_init(&internal->hash, HASH_BINS, watchpoint_hash_func, watchpoint_hash_comp);
     E_IF(err, -1);
 
+    err = hash_init(&s_internal->hash, HASH_BINS, watchpoint_hash_func, watchpoint_hash_comp);
+    E_IF(err, -1);
+
     err = list_init(&internal->list);
+    E_IF(err, -1);
+
+    err = list_init(&s_internal->list);
     E_IF(err, -1);
 
     return 0;
@@ -275,6 +305,9 @@ sampler_fini(sampler_t *s)
     free(s->_internal);
     s->_internal = NULL;
 
+    free(s->_s_internal);
+    s->_s_internal = NULL;
+
     return 0;
 }
 
@@ -287,7 +320,7 @@ sampler_watchpoint_lookup(sampler_t *s, usf_access_t *ref)
     sampler_internal_t *internal = (sampler_internal_t *)s->_internal;
     int           err;
     unsigned      line  = ref->addr >> s->line_size_lg2;
-    watchpoint_t *w_hit = watchpoint_lookup(&internal->hash, line);
+    watchpoint_t *w_hit = watchpoint_lookup(&internal->hash, line, ref);
 
     if (w_hit) {
         err = burst_log_smpl(w_hit->burst, &w_hit->ref, ref, s->line_size_lg2);
@@ -311,22 +344,59 @@ sampler_watchpoint_insert(sampler_t *s, usf_access_t *ref)
     return 0;
 }
 
+/*Watchpoints on PCs for detecting strides*/
+int
+sampler_pc_watchpoint_lookup(sampler_t *s, usf_access_t *ref)
+{
+    sampler_internal_t *s_internal = (sampler_internal_t *)s->_s_internal;
+    int           err;
+    unsigned      line  = ref->pc;
+    watchpoint_t *w_hit = watchpoint_lookup(&s_internal->hash, line, ref);
+
+    if (w_hit) {
+        err = burst_log_stride_smpl(w_hit->burst, &w_hit->ref, ref, s->line_size_lg2);
+        E_IF(err, -1);
+        free(w_hit);
+    }
+
+    return 0;
+}
+
+/*Watchpoints on PCs for detecting strides*/
+int
+sampler_pc_watchpoint_insert(sampler_t *s, usf_access_t *ref)
+{
+    sampler_internal_t *s_internal = (sampler_internal_t *)s->_s_internal;
+    sampler_internal_t *internal = (sampler_internal_t *)s->_internal;
+    int      err;
+    unsigned line = ref->pc; 
+
+    err = watchpoint_insert(&s_internal->hash, internal->burst, line, ref);
+    E_IF(err, -1);
+    return 0;
+}
+
+
 int
 sampler_burst_begin(sampler_t *s, unsigned long time)
 {
     sampler_internal_t *internal = (sampler_internal_t *)s->_internal;
+    sampler_internal_t *s_internal = (sampler_internal_t *)s->_s_internal;
     burst_t *burst;
     char     path[256];
 
     snprintf(path, 256, "%s.%lu", s->usf_base_path, internal->burst_idx++);
+
+    s_internal->burst_idx = internal->burst_idx;
 
     burst = burst_new(s, path, time);
     E_IF(!burst, -1);
 
     strncpy(burst->name, path, 256);
 
-    internal->burst = burst;
+    s_internal->burst = internal->burst = burst;
     list_push_back(&internal->list, &burst->elem);
+    list_push_back(&s_internal->list, &burst->elem);
 
     return 0;
 }
@@ -335,7 +405,9 @@ int
 sampler_burst_end(sampler_t *s, unsigned long time)
 {
     sampler_internal_t *internal = (sampler_internal_t *)s->_internal;
-    internal->burst = NULL;
+    sampler_internal_t *s_internal = (sampler_internal_t *)s->_s_internal;
+    s_internal->burst = internal->burst = NULL;
+
     return 0;
 }
 
@@ -374,6 +446,9 @@ sampler_ref(sampler_t *s, usf_access_t *ref)
     err = sampler_watchpoint_lookup(s, ref);
     E_IF(err, -1);
 
+    err = sampler_pc_watchpoint_lookup(s, ref);
+    E_IF(err, -1);
+    
     if (s->burst_size) {
         if (s->burst_end == time) {
             err = sampler_burst_end(s, time);
@@ -395,6 +470,9 @@ sampler_ref(sampler_t *s, usf_access_t *ref)
         err = sampler_watchpoint_insert(s, ref);
         E_IF(err, -1);
     
+        err = sampler_pc_watchpoint_insert(s, ref);
+        E_IF(err, -1);
+
         s->next_sample = time + MAX(SAMPLE_RND(s), 1);
     }
 
