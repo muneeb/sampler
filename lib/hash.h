@@ -67,12 +67,17 @@ void         uart_sampler_hash_insert(hash_t *hash, hash_elem_t *elem);
 void         uart_sampler_hash_remove(hash_t *hash, hash_elem_t *elem);
 hash_elem_t *uart_sampler_hash_lookup(hash_t *hash, hash_elem_t *elem);
 
+void uart_sampler_update_all_bins(hash_t *hash, unsigned size, hash_elem_t *elem);
+
+void uart_sampler_clear_list(hash_t *hash, hash_elem_t *elem);
 
 #define hash_init uart_sampler_hash_init
 #define hash_fini uart_sampler_hash_fini
 #define hash_insert uart_sampler_hash_insert
 #define hash_remove uart_sampler_hash_remove
 #define hash_lookup uart_sampler_hash_lookup
+#define update_all uart_sampler_update_all_bins
+#define clear_list uart_sampler_clear_list
 
 #endif /* HASH_H */
 

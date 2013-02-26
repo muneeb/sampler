@@ -64,6 +64,31 @@ uart_sampler_hash_insert(hash_t *hash, hash_elem_t *elem)
     list_t *bin = &hash->bins[hash->hash_func(elem)];
 
     list_push_front(bin, elem);
+
+}
+
+void
+uart_sampler_update_all_bins(hash_t *hash, unsigned size, hash_elem_t *elem)
+{
+
+    list_t *bin;
+
+    for (int i = 0; i < size; i++){
+        bin = &hash->bins[i];
+        if(!list_empty(bin))
+            list_push_front(bin, elem);
+
+    }
+
+}
+
+void uart_sampler_clear_list(hash_t *hash, hash_elem_t *elem)
+{
+
+    list_t *bin = &hash->bins[hash->hash_func(elem)];
+
+    list_init(bin);
+
 }
 
 void

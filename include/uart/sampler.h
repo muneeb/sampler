@@ -75,6 +75,9 @@ extern int sampler_watchpoint_insert(sampler_t *s, usf_access_t *ref);
 extern int sampler_pc_watchpoint_lookup(sampler_t *s, usf_access_t *ref);
 extern int sampler_pc_watchpoint_insert(sampler_t *s, usf_access_t *ref);
 
+extern int sampler_smptraceins_insert(sampler_t *s, usf_access_t *ref, unsigned long time);
+extern int sampler_smptraceins_end(sampler_t *s, usf_access_t *ref, unsigned long time);
+
 extern int sampler_burst_begin(sampler_t *s, unsigned long time);
 extern int sampler_burst_end(sampler_t *s, unsigned long time);
 extern int sampler_burst_active(sampler_t *s);

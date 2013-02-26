@@ -51,6 +51,9 @@ typedef struct {
 typedef struct {
     hash_t          hash;
     list_t          list;
+    
+    hash_t          instracehash;
+    unsigned long   trace_begin_time;
 
     burst_t        *burst;
     unsigned long   burst_idx;
@@ -62,6 +65,14 @@ typedef struct {
     burst_t      *burst;
     usf_access_t  ref;
 } watchpoint_t;
+
+/* smptraceins_t object is used to record individual memory instruction pcs in the trace*/
+typedef struct {
+    hash_elem_t   elem;
+    usf_addr_t    pc;
+    unsigned long time;
+    burst_t      *burst;
+} smptraceins_t;
 
 #define MAX(_a, _b) ({                          \
             __typeof__(_a) __a = _a;            \
@@ -194,11 +205,47 @@ burst_log_dngl(burst_t *burst, usf_access_t *ref,
     return 0;
 }
 
+static int
+burst_log_smptrace(burst_t *burst, usf_access_t *ref, usf_addr_t *ins_trace)
+{
+    usf_event_t event;
+    usf_error_t error;
+
+    event.type = USF_EVENT_SMPTRACE; 
+    event.u.smptrace.begin = *ref;
+
+    for(int i = 0; i < SMPTRACE_LEN; i++)
+        event.u.smptrace.ins_trace[i] = ins_trace[i];
+
+    error = usf_append(burst->usf_file, &event);
+    E_USF(error, -1);
+    LOG(2, "burst: %s\n", burst->name);
+    return 0;
+}
+
+static unsigned
+smptraceins_hash_func(hash_elem_t *e)
+{
+    smptraceins_t *t = HASH_STRUCT(smptraceins_t, elem, e);
+    unsigned long in = t->time & (SMPTRACE_LEN - 1);
+
+    return t->time & (SMPTRACE_LEN - 1);
+}
+
+static int
+smptraceins_hash_comp(hash_elem_t *e1, hash_elem_t *e2)
+{
+    smptraceins_t *t1 = HASH_STRUCT(smptraceins_t, elem, e1);
+    smptraceins_t *t2 = HASH_STRUCT(smptraceins_t, elem, e2);
+
+    return ( t1->time == t2->time );
+}
+
 static unsigned
 watchpoint_hash_func(hash_elem_t *e)
 {
     watchpoint_t *w = HASH_STRUCT(watchpoint_t, elem, e);
-    return w->line & (HASH_BINS - 1);
+    return w->line & (HASH_BINS - 1); 
 }
 
 static int
@@ -214,6 +261,77 @@ watchpoint_hash_comp(hash_elem_t *e1, hash_elem_t *e2)
 }
 
 static int
+smptraceins_insert(hash_t *hash, burst_t *burst, usf_addr_t pc, unsigned long time)
+{
+    smptraceins_t *t;
+
+    t = (smptraceins_t *)malloc(sizeof(smptraceins_t));
+    E_IF(t == NULL, -1);
+
+    t->pc  =  pc;
+    t->burst =  burst;
+
+    if(time){
+        t->time = time;
+        hash_insert(hash, &t->elem);
+    }
+    else
+        update_all(hash, SMPTRACE_LEN, &t->elem);
+
+    return 0;
+}
+
+static int
+smptrace_end(hash_t *hash, burst_t *burst, usf_access_t *ref, unsigned long time)
+{
+    usf_addr_t ins_trace[SMPTRACE_LEN];
+    list_elem_t *e;
+    list_t *bin;
+    smptraceins_t t_cmp = { .time = time };
+    smptraceins_t *t;
+
+//    e = hash_lookup(hash, &t_cmp.elem);
+ 
+//     if(!e)
+//        return -1;
+
+    bin = &hash->bins[hash->hash_func(&t_cmp.elem)];
+
+//    t = HASH_STRUCT(smptraceins_t, elem, e);
+
+    /* if(!list_empty(bin)) */
+    /*     fprintf(stderr, ">>> %lu %d <<<\n", t->time, hash->hash_func(e)); */
+    
+    /* while(!list_empty(bin)){ */
+    /*     e = list_pop_front(bin); */
+    /*     t = HASH_STRUCT(smptraceins_t, elem, e); */
+    /*     fprintf(stderr,"%lu ", t->pc); */
+    /* } */
+    /* fprintf(stderr,"\n"); */
+
+    if(list_empty(bin))
+        return -1;
+
+    for(int i = 0; i < SMPTRACE_LEN; i++){
+        e = list_pop_front(bin);
+        
+        if(e)
+        {
+            t = HASH_STRUCT(smptraceins_t, elem, e);
+            ins_trace[i] = t->pc;
+        }
+        else
+            ins_trace[i] = 0;
+    }
+
+    burst_log_smptrace(burst, ref, ins_trace);
+
+    clear_list(hash, &t_cmp.elem);
+
+    return 0;
+}
+
+static int
 watchpoint_insert(hash_t *hash, burst_t *burst, unsigned line, usf_access_t *ref)
 {
     watchpoint_t *w;
@@ -225,6 +343,7 @@ watchpoint_insert(hash_t *hash, burst_t *burst, unsigned line, usf_access_t *ref
     w->burst =  burst;
     w->ref   = *ref;
     hash_insert(hash, &w->elem);
+
     return 0;
 }
 
@@ -261,6 +380,9 @@ sampler_init(sampler_t *s)
     s->usf_flags = USF_FLAG_NATIVE_ENDIAN | USF_FLAG_BURST;
 
     err = hash_init(&internal->hash, HASH_BINS, watchpoint_hash_func, watchpoint_hash_comp);
+    E_IF(err, -1);
+
+    err = hash_init(&internal->instracehash, SMPTRACE_LEN, smptraceins_hash_func, smptraceins_hash_comp);
     E_IF(err, -1);
 
     err = hash_init(&s_internal->hash, HASH_BINS, watchpoint_hash_func, watchpoint_hash_comp);
@@ -314,6 +436,32 @@ sampler_fini(sampler_t *s)
 /*
  * Low level API
  */
+
+int 
+sampler_smptraceins_insert(sampler_t *s, usf_access_t *ref, unsigned long time)
+{
+    sampler_internal_t *internal = (sampler_internal_t *)s->_internal;
+    int      err;
+
+    err = smptraceins_insert(&internal->instracehash, internal->burst, ref->pc, time);
+    E_IF(err, -1);
+    
+    return 0;
+}
+
+int 
+sampler_smptraceins_end(sampler_t *s, usf_access_t *ref, unsigned long time)
+{
+    sampler_internal_t *internal = (sampler_internal_t *)s->_internal;
+    int      err;
+
+    err = smptrace_end(&internal->instracehash, internal->burst, ref, time);
+
+    E_IF(err, -1);
+    
+    return 0;
+}
+
 int
 sampler_watchpoint_lookup(sampler_t *s, usf_access_t *ref)
 {
@@ -375,7 +523,6 @@ sampler_pc_watchpoint_insert(sampler_t *s, usf_access_t *ref)
     E_IF(err, -1);
     return 0;
 }
-
 
 int
 sampler_burst_begin(sampler_t *s, unsigned long time)
@@ -442,6 +589,8 @@ sampler_ref(sampler_t *s, usf_access_t *ref)
     int           err;
     unsigned long time = ref->time;
     sampler_internal_t *internal = (sampler_internal_t *)s->_internal;
+    unsigned long trace_begin_time = internal->trace_begin_time;  
+    static int short_trace = 0;
 
     err = sampler_watchpoint_lookup(s, ref);
     E_IF(err, -1);
@@ -465,15 +614,39 @@ sampler_ref(sampler_t *s, usf_access_t *ref)
             s->burst_end   = time + s->burst_size;
         }
     }
+    
+    if ( internal->burst && time >= trace_begin_time && time <= s->next_sample &&  s->burst_begin != time)
+    {
+        if( time == trace_begin_time || time == s->next_sample ){
+            sampler_smptraceins_insert(s, ref, time);
+            short_trace = 0;
+        }
+        else
+            sampler_smptraceins_insert(s, ref, 0); 
+    }
 
     if (internal->burst && s->next_sample == time) {
         err = sampler_watchpoint_insert(s, ref);
         E_IF(err, -1);
+
+        if(s->burst_begin != time)
+            sampler_smptraceins_end(s, ref, time);
     
         err = sampler_pc_watchpoint_insert(s, ref);
         E_IF(err, -1);
 
         s->next_sample = time + MAX(SAMPLE_RND(s), 1);
+        internal->trace_begin_time = s->next_sample - SMPTRACE_LEN;
+
+        // if the time for the start of the trace has already passed
+        // WARNING: This is a hack to map the trace to the correct bin in the hash func
+        // This results in a short(er) trace
+        if( internal->trace_begin_time <= time )
+        {
+            sampler_smptraceins_insert(s, ref, internal->trace_begin_time);
+            short_trace = 1;
+        }
+
     }
 
     return 0;
