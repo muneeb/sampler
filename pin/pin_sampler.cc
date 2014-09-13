@@ -63,6 +63,18 @@ KNOB<unsigned> knob_seed(KNOB_MODE_WRITEONCE, "pintool", "s", "0",
 KNOB<int> knob_log_level(KNOB_MODE_WRITEONCE, "pintool", "v", "0",
 			 "Log level");
 
+KNOB<BOOL> knob_sample_ins_trace(KNOB_MODE_WRITEONCE,   "pintool",
+   "ti", "0", "record instruction trace -- off by default -- increases storage space and analysis time");
+
+KNOB<BOOL> knob_sample_data_trace(KNOB_MODE_WRITEONCE,   "pintool",
+   "td", "0", "record data trace -- off by default -- increases storage space and analysis time");
+
+KNOB<BOOL> knob_sample_stride(KNOB_MODE_WRITEONCE,   "pintool",
+   "ts", "1", "sample per-pc stride -- ON BY DEFAULT");
+
+KNOB<int> knob_sample_adj_cl(KNOB_MODE_WRITEONCE,   "pintool",
+   "ta", "0", "sample adjacent cache lines -- OFF BY DEFAULT");
+
 
 sampler_t sampler;
 usf_atime_t access_counter = 0;
@@ -82,6 +94,7 @@ trace_mem(ADDRINT ip, ADDRINT addr, UINT32 size, THREADID tid, UINT32 ref_type, 
     };
 
     sampler_ref(&sampler, &access);
+
 }
 
 static VOID PIN_FAST_ANALYSIS_CALL
@@ -96,8 +109,22 @@ instrument(INS ins, VOID *v)
     BOOL rd = INS_IsMemoryRead(ins);
     BOOL wr = INS_IsMemoryWrite(ins);
 
-    if (!rd && !wr)
-	return;
+    if (!rd && !wr){
+      const UINT32 size = 0;
+      const UINT32 atype = USF_ATYPE_INSTRUCTION;
+
+      /*This call is to insert PC into instruction trace*/
+      INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)trace_mem,
+		       IARG_INST_PTR,
+		       IARG_INST_PTR,
+		       IARG_UINT32, size,
+		       IARG_THREAD_ID,
+		       IARG_UINT32, atype,
+		       IARG_UINT32, 0,
+		       IARG_END); 
+
+      return;
+    }
 
     UINT32 no_ops = INS_MemoryOperandCount(ins);
 
@@ -138,6 +165,10 @@ init()
     sampler.line_size_lg2   = knob_smp_line_size_lg2;
     sampler.seed            = knob_seed;
     sampler.log_level       = knob_log_level;
+    sampler.is_sample_ins_trace = knob_sample_ins_trace;
+    sampler.is_sample_data_trace = knob_sample_data_trace;
+    sampler.is_sample_stride = knob_sample_stride;
+    sampler.is_sample_adj_cl = knob_sample_adj_cl;
 
     if (knob_burst_rnd.Value() == "const")
         sampler.burst_rnd = sampler_rnd_const;

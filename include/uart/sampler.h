@@ -62,6 +62,11 @@ typedef struct {
 
     int             log_level;
     unsigned        seed;
+
+    int            is_sample_ins_trace;
+    int            is_sample_data_trace;
+    int            is_sample_stride;
+    int	  	   is_sample_adj_cl;
 } sampler_t;
 
 
@@ -70,13 +75,19 @@ extern int sampler_fini(sampler_t *s);
 
 /* Low level API */
 extern int sampler_watchpoint_lookup(sampler_t *s, usf_access_t *ref);
-extern int sampler_watchpoint_insert(sampler_t *s, usf_access_t *ref);
+extern int sampler_watchpoint_insert(sampler_t *s, usf_access_t *ref, int is_adj_mon);
 
 extern int sampler_pc_watchpoint_lookup(sampler_t *s, usf_access_t *ref);
 extern int sampler_pc_watchpoint_insert(sampler_t *s, usf_access_t *ref);
 
 extern int sampler_smptraceins_insert(sampler_t *s, usf_access_t *ref, unsigned long time);
 extern int sampler_smptraceins_end(sampler_t *s, usf_access_t *ref, unsigned long time);
+
+extern int sampler_smptracedata_insert(sampler_t *s, usf_access_t *ref, unsigned long time);
+extern int sampler_smptracedata_end(sampler_t *s, usf_access_t *ref, unsigned long time);
+
+extern int sampler_monitor_adj_cl_insert(sampler_t *s, unsigned line);
+extern int sampler_monitor_adj_cl_access(sampler_t *s, unsigned line);
 
 extern int sampler_burst_begin(sampler_t *s, unsigned long time);
 extern int sampler_burst_end(sampler_t *s, unsigned long time);
